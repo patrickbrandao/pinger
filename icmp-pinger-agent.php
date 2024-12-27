@@ -757,11 +757,12 @@
 			}
 		}else{
 			// Deu algo errado
+			if($debug) echo "# Webhook falhou, codigo de erro ",$ret['code'],"\n";
 			$ret['stdno'] = $ret['code'];
 		}
 		// debug do retorno
 		if($debug){
-			echo "webhook_send: remote reply:"; print_r($ret);
+			echo "webhook_send: curl debug info:"; print_r($ret);
 		}
 		return $ret;
 	}
@@ -1160,6 +1161,8 @@
 			// Identificador unico do teste
 			$uuid = generate_uuid();
 
+			// Singularizar o teste com a identidade unica
+			// e o ponto unico no tempo
 			$event = array(
 				'uuid'            => $uuid,
 				'start_datetime'  => date('c', $start_timestamp),
@@ -1175,20 +1178,47 @@
 			}
 			// Compor JSON de resultado
 			if($MAIN_CONFIG['format']=='json'){
+
 				// Resultado em JSON
 				$JSON = array();
 				$JSON['event']       = $event;
 				$JSON['ping_config'] = $ping_config;
-				$JSON['fping_table'] = $fping_table;
+
 				// Ajustar tabela para registros de chaves numericas
+				$ping_summary = array(
+					'hosts'            => array(),
+					'hosts_online'     => array(),
+					'hosts_offline'    => array(),
+					'total_online'     => 0,
+					'total_offline'    => 0,
+					'packets_sent'     => 0,
+					'packets_received' => 0,
+					'packets_lost'     => 0
+				);
 				$ping_table = array();
 				$id = 1;
 				foreach($fping_table as $k=>$reg){
 					$ping_table[$id] = $reg;
+					$ping_summary['hosts'][$id]        = $reg['address'];
+					$ping_summary['packets_sent']     += $reg['sent'];
+					$ping_summary['packets_received'] += $reg['received'];
+					$ping_summary['packets_lost']     += $reg['losts'];
+					if($reg['status']){
+						$ping_summary['total_online']++;
+						$ping_summary['hosts_online'][$id] = $reg['address'];
+					}else{
+						$ping_summary['total_offline']++;
+						$ping_summary['hosts_offline'][$id] = $reg['address'];
+					}
 					$id++;
 				}
-				$JSON['ping_table'] = $ping_table;
+				$JSON['ping_summary'] = $ping_summary;
+				$JSON['ping_table']   = $ping_table;
+				// $JSON['fping_table']  = $fping_table;
+
+				// JSON para text
 				$JSON_TEXT = ujson_encode($JSON);
+
 				// Modo quiet, nao exibir
 				if($debug) print_r($JSON);
 				if(!$quiet) echo $JSON_TEXT,"\n";
@@ -1200,13 +1230,8 @@
 				}
 
 				// Webhook presente?
-				$tmp = webhook_send($JSON_TEXT);
-				if($debug){
-					if($tmp){
-						echo "# JSON enviado para webhook com sucesso\n";
-					}else{
-						echo "# JSON nao foi enviado, erro ao acessar webhook\n";
-					}
+				if($MAIN_CONFIG['webhook_url']!=''){
+					webhook_send($JSON_TEXT);
 				}
 
 			}else{
