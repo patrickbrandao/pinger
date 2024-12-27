@@ -238,6 +238,12 @@
 		return $iplist;
 	}
 
+	// gerar uuid, obter uuid do kernel
+	function generate_uuid(){
+		$uuid = trim(file_get_contents('/proc/sys/kernel/random/uuid'));
+		return $uuid;
+	}
+
 	// verificar se o cabecalho http e' sintaticamente correto
 	function is_http_header($header){
 		if(strpos($header, ': ')!==false) return true;
@@ -340,6 +346,9 @@
 
 	// Realizar ping numa lista de hosts paralelamente
 	function &icmp_fping($list, $pconf=false){
+		global $MAIN_CONFIG;
+		$debug = $MAIN_CONFIG['debug'];
+
 		// Array de resultado
 		$results = array();
 
@@ -359,8 +368,9 @@
 
 		// Critica de argumentos
 		$size = $pconf['size'];
-		// Tamanho real baseado em pacote ip, 28 bytes a menos
-		$size -= 28;
+
+		// Tamanho do payload icmp,
+		// o pacote real vai ser 8+20 para ipv4, 8+40 para ipv6
 		if($size < 8) $size = 8;
 
 		// Registro padrao
@@ -373,7 +383,18 @@
 		// - losts: pacotes perdidos
 		// - avg: media do ping, em microsegundos
 		// - total: total de microsegundos dos pings respondidos
-		$stdreg = array('address'=>'', 'status'=>0, 'min'=>0, 'avg'=>0, 'max'=>0, 'total'=>0, 'sent'=>0, 'received'=>0, 'losts'=>0);
+		$stdreg = array(
+			'address'  => '',
+			'status'   => 0,
+			'min'      => 0,
+			'avg'      => 0,
+			'max'      => 0,
+			'total'    => 0,
+			'sent'     => 0,
+			'received' => 0,
+			'losts'    => 0,
+			'jitter'   => 0,
+		);
 
 		// remover linhas em brancos e mascaras de rede dos ips listados
 		foreach($list as $k=>$ip){
@@ -407,6 +428,13 @@
 		// - Juntar comando e argumentos
 		$cmd = 'fping '.implode(' ', $args);
 
+		if($debug){
+			echo "# fping, parametros:\n";
+			echo "# - args..: "; print_r($args);
+			echo "# - pconf.: "; print_r($pconf);
+			echo "# - cmd...: ",$cmd,"\n";
+		}
+
 		// Argumentos do fping:
 		// -C N  = numero de pings, mostrando latencia por IP
 		// -q    = nao mostra resumo por host
@@ -418,6 +446,11 @@
 		// echo "#>>> CMD: $cmd\n";
 		$areg = shell_execute($cmd);
 		$stderr = trim($areg['stderr']);
+
+		if($debug){
+			echo "# fping, shell return:\n";
+			echo "# - areg..: "; print_r($areg);
+		}
 
 		// echo "icmp_fping() debug:"; print_r($pconf);
 		// echo "LIST:"; print_r($list);
@@ -443,7 +476,7 @@
 			if(!isset($results[$ip])) continue;
 			// Resultados:
 			$replies = trim(substr($line, $d+1));
-			// echo "[$ip] = [$replies]\n";
+			if($debug) echo "# - reply [$ip] = [$replies]\n";
 			// - pacotes enviados
 			$alat = explode(' ', $replies);
 			$losts = 0;
@@ -473,6 +506,7 @@
 			$results[$ip]['min'] = $min;
 			$results[$ip]['max'] = $max;
 			$results[$ip]['total'] = $total;
+			$results[$ip]['jitter'] = $max - $min;
 			$results[$ip]['avg'] = ($total && $received) ? (int)($total / $received) : 0;
 
 			// Resumir status
@@ -735,6 +769,11 @@
 
 	//==================================================================================================================================
 
+	// Tempo universal
+	date_default_timezone_set('UTC');
+
+	// Sem tempo limite para operacoes em daemon
+	set_time_limit(0);
 
 	// Argumentos
 	// Verbosidade
@@ -1039,15 +1078,19 @@
 	//==================================================================================================================================
 
 	// Config de ping padrao
+	// Config de operacao a reportar
 	$ping_config = array(
-		'size' => $MAIN_CONFIG['size'],
-		'count' => $MAIN_CONFIG['count'],
-		'ttl' => $MAIN_CONFIG['ttl'],
-		'retries' => $MAIN_CONFIG['retries'],
-		'fragment' => $MAIN_CONFIG['fragment'],
-		'interval' => $MAIN_CONFIG['interval'],
-		'timeout' => $MAIN_CONFIG['timeout'],
-		'source_address' => ''
+		'uuid'            => $uuid,
+		'type'            => 'icmp-echo',
+		'name'            => $MAIN_CONFIG['name'],
+		'interval'        => $MAIN_CONFIG['interval'],
+		'pause'           => $MAIN_CONFIG['pause'],
+		'size'            => $MAIN_CONFIG['size'],
+		'count'           => $MAIN_CONFIG['count'],
+		'ttl'             => $MAIN_CONFIG['ttl'],
+		'retries'         => $MAIN_CONFIG['retries'],
+		'fragment'        => $MAIN_CONFIG['fragment'],
+		'timeout'         => $MAIN_CONFIG['timeout']
 	);
 
 	// Argumentos
@@ -1108,7 +1151,25 @@
 		// Pingar
 		if($total){
 			if($debug) echo "# Chamando fping\n";
+
+			// Chamar teste
+			$start_timestamp = @time();
 			$fping_table =& icmp_fping($targets, $ping_config);
+			$stop_timestamp = @time();
+			$ellapsed_time = $stop_timestamp - $start_timestamp;
+
+			// Identificador unico do teste
+			$uuid = generate_uuid();
+
+			$event = array(
+				'uuid'            => $uuid,
+				'start_datetime'  => date('c', $start_timestamp),
+				'start_timestamp' => $start_timestamp,
+				'stop_datetime'   => date('c', $stop_timestamp),
+				'stop_timestamp'  => $stop_timestamp,
+				'ellapsed_time'   => $ellapsed_time,
+			);
+
 			if($debug){
 				echo "# Resultado fping:\n";
 				print_r($fping_table);
@@ -1117,7 +1178,7 @@
 			if($MAIN_CONFIG['format']=='json'){
 				// Resultado em JSON
 				$JSON = array();
-				$JSON['main_config'] = $MAIN_CONFIG;
+				$JSON['event']       = $event;
 				$JSON['ping_config'] = $ping_config;
 				$JSON['fping_table'] = $fping_table;
 				// Ajustar tabela para registros de chaves numericas
@@ -1128,7 +1189,7 @@
 					$id++;
 				}
 				$JSON['ping_table'] = $ping_table;
-				$JSON_TEXT = ujson_encode($JSON);;
+				$JSON_TEXT = ujson_encode($JSON);
 				// Modo quiet, nao exibir
 				if($debug) print_r($JSON);
 				if(!$quiet) echo $JSON_TEXT,"\n";
@@ -1167,6 +1228,10 @@
 		// Pause entre loops
 		if($debug) echo "# Aguardando proximo loop, pause de $pause segundos\n";
 		sleep($pause);
+
+		// Limpeza constante de lixo
+		gc_collect_cycles();
+
 	}
 
 	// Encerrar
