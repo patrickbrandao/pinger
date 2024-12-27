@@ -1080,7 +1080,6 @@
 	// Config de ping padrao
 	// Config de operacao a reportar
 	$ping_config = array(
-		'uuid'            => $uuid,
 		'type'            => 'icmp-echo',
 		'name'            => $MAIN_CONFIG['name'],
 		'interval'        => $MAIN_CONFIG['interval'],
